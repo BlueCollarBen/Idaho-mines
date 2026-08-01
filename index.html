@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Idaho Historic Mines Explorer</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css" />
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet.markercluster/1.5.3/MarkerCluster.css" />
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet.markercluster/1.5.3/MarkerCluster.Default.css" />
+<style>
+  :root{--ink:#1c1a17;--paper:#f4efe6;--rust:#a8471f;--rust-dark:#7c3316;--line:#d9cfbd;--panel:#fbf7ef;--danger:#8b1e1e;}
+  *{box-sizing:border-box;}
+  html,body{height:100%;margin:0;font-family:Georgia,serif;background:var(--paper);color:var(--ink);}
+  #app{display:flex;flex-direction:column;height:100vh;}
+  header{background:linear-gradient(135deg,var(--rust-dark),var(--rust));color:#fbf3e6;padding:12px 16px;flex:0 0 auto;}
+  header h1{font-size:1.05rem;margin:0;}
+  header .sub{font-size:.7rem;opacity:.9;font-family:sans-serif;margin-top:2px;}
+  #banner{background:#2b2620;color:#e8dcc4;font-family:sans-serif;font-size:.7rem;padding:6px 14px;text-align:center;line-height:1.4;flex:0 0 auto;}
+  #banner strong{color:#e8b45a;}
+  #controls{display:flex;gap:8px;padding:8px 12px;background:var(--panel);border-bottom:1px solid var(--line);flex-wrap:wrap;align-items:center;font-family:sans-serif;font-size:.75rem;flex:0 0 auto;}
+  #controls label{display:flex;align-items:center;gap:4px;}
+  #controls select,#controls input[type=text]{padding:5px 7px;border:1px solid var(--line);border-radius:4px;font-family:sans-serif;font-size:.75rem;}
+  #status{font-size:.68rem;color:#665;font-family:sans-serif;margin-left:auto;}
+  #map{flex:1 1 auto;min-height:300px;width:100%;background:#ddd6c8;}
+  .popup-title{font-family:Georgia,serif;font-weight:bold;font-size:.95rem;color:var(--rust-dark);margin-bottom:2px;}
+  .popup-meta{font-family:sans-serif;font-size:.72rem;color:#444;margin:2px 0;}
+  .popup-warning{font-family:sans-serif;font-size:.68rem;background:#fdeeee;color:var(--danger);border-left:3px solid var(--danger);padding:5px 7px;margin-top:6px;border-radius:2px;}
+</style>
+</head>
+<body>
+<div id="app">
+  <header>
+    <h1>⛏ Idaho Historic Mines Explorer</h1>
+    <div class="sub" id="count-badge">loading…</div>
+  </header>
+  <div id="banner"><strong>Safety first:</strong> markers show approximate historic locations, not verified current conditions. Never enter a mine opening. Confirm land ownership before visiting.</div>
+  <div id="controls">
+    <label><input type="checkbox" id="toggle-mrds" checked> USGS mine records</label>
+    <label><input type="checkbox" id="toggle-districts" checked> Districts</label>
+    <label><input type="checkbox" id="toggle-towns" checked> Ghost towns</label>
+    <select id="status-filter">
+      <option value="confirmed" selected>Confirmed mines only</option>
+      <option value="all">All records</option>
+      <option value="prospect">Prospects/occurrences only</option>
+    </select>
+    <input type="text" id="search-box" placeholder="Search name…" />
+    <span id="status">Fetching USGS data…</span>
+  </div>
+  <div id="map"></div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet.markercluster/1.5.3/leaflet.markercluster.min.js"></script>
+<script>
+const MRDS_URL = "https://services.arcgis.com/v01gqwM5QqNysAAi/ArcGIS/rest/services/Mineral_Resources_Data_System_MRDS_Compact_Version/FeatureServer/0/query";
+const IDAHO_BBOX = {xmin:-117.3, ymin:41.9, xmax:-111.0, ymax:49.1};
+const CONFIRMED_STATUSES = ["producer","past producer","plant"];
+const PROSPECT_STATUSES = ["prospect","occurrence","unknown",""];
+
+const KNOWN_DISTRICTS = [
+  {name:"Silver Valley / Coeur d'Alene Mining District", lat:47.5405, lng:-116.0975, era:"1884–present", note:"One of the richest silver-lead-zinc districts in US history. Bunker Hill, Sunshine, Galena mines. Extensive underground workings; surface hazards on old claims near Wallace, Kellogg, Osburn.", risk:"high"},
+  {name:"Yankee Fork District (Custer/Bonanza)", lat:44.4139, lng:-114.7622, era:"1870s–1910s", note:"Ghost towns of Custer & Bonanza. General Custer Mill and shafts along Jordan Creek.", risk:"high"},
+  {name:"Atlanta Mining District", lat:43.8125, lng:-115.1275, era:"1864–1930s", note:"Remote gold district; collapsed shafts and adits around the Atlanta townsite.", risk:"high"},
+  {name:"Rocky Bar Mining District", lat:43.7614, lng:-115.1478, era:"1863–1900s", note:"Boise County gold rush town, largely abandoned. Open shafts on hillsides.", risk:"high"},
+  {name:"Idaho City / Boise Basin District", lat:43.8286, lng:-115.8375, era:"1862–1900s", note:"Idaho's biggest gold rush. Extensive placer and hardrock workings.", risk:"medium"},
+  {name:"Warren Mining District", lat:45.2725, lng:-115.6789, era:"1862–1930s", note:"Isolated district; dredge tailings plus older lode shafts.", risk:"medium"},
+  {name:"Florence Mining District", lat:45.6167, lng:-116.0167, era:"1861–1870s", note:"Short-lived boomtown, largely vanished. Old placer pits and shaft remnants.", risk:"medium"},
+  {name:"Leesburg Mining District", lat:45.2039, lng:-114.3086, era:"1866–1900s", note:"Remote district; ghost town with old workings nearby.", risk:"medium"},
+  {name:"Loon Creek District", lat:44.7167, lng:-114.9167, era:"1869–1880s", note:"Very remote wilderness district. Shafts largely unmonitored.", risk:"high"},
+  {name:"Sawtooth City / Vienna (Sawtooth Basin)", lat:43.9575, lng:-114.8567, era:"1879–1890s", note:"High-elevation silver boom towns, now mostly ghost towns.", risk:"medium"},
+  {name:"Seven Devils Mining District", lat:45.1000, lng:-116.5333, era:"1880s–1920s", note:"Copper district above Hells Canyon; collapsed adits along ridge trails.", risk:"medium"},
+  {name:"Bayhorse District", lat:44.3606, lng:-114.3183, era:"1877–1900s", note:"Idaho State Park ghost town; some areas stabilized, others not.", risk:"medium"},
+  {name:"Silver City / War Eagle Mountain District (Owyhee County)", lat:43.0136, lng:-116.7325, era:"1863–1943", note:"One of Idaho's richest silver-gold districts. Over 250 mines historically claimed around War Eagle Mountain, with extensive surface hazards throughout.", risk:"high"},
+  {name:"De Lamar / Wagontown District (Owyhee County)", lat:43.0864, lng:-116.7847, era:"1886–1998", note:"Adjacent to Silver City; ran on and off for over a century. Open-pit workings plus older underground shafts.", risk:"high"},
+  {name:"Gilmore-Nicholia District (Lemhi County)", lat:44.8983, lng:-113.3897, era:"1880s–1929", note:"Silver-lead district; scattered adits and shafts around the ghost town of Gilmore.", risk:"medium"},
+];
+
+const GHOST_TOWNS = [
+  {name:"Silver City", lat:43.0142, lng:-116.7328, era:"1863–1943", note:"Best-preserved ghost town in the Northwest — over 75 structures standing. Surrounded by hundreds of old shafts and adits.", risk:"high"},
+  {name:"Custer", lat:44.4308, lng:-114.6947, era:"1879–1911", note:"Preserved museum townsite within the Yankee Fork Historic Area.", risk:"medium"},
+  {name:"Bonanza", lat:44.4189, lng:-114.7239, era:"1877–1910s", note:"Sister townsite to Custer, mostly foundations now. Old shafts on surrounding slopes.", risk:"high"},
+  {name:"Golden / Golden City (Boise Basin)", lat:43.8464, lng:-115.8189, era:"1862–1870s", note:"Small Boise Basin gold camp, largely reclaimed by forest.", risk:"medium"},
+  {name:"Placerville", lat:43.9439, lng:-115.9911, era:"1862–1900s", note:"Boise Basin boomtown, partially still inhabited. Old diggings surround the town.", risk:"medium"},
+  {name:"Ruby City", lat:43.0219, lng:-116.7217, era:"1863–1868", note:"Short-lived rival to Silver City; mostly gone, foundations only.", risk:"low"},
+  {name:"De Lamar (townsite)", lat:43.0886, lng:-116.7961, era:"1886–1914", note:"Company town for the De Lamar mine; scattered ruins and tailings nearby.", risk:"high"},
+  {name:"Gilmore", lat:44.8964, lng:-113.3958, era:"1880s–1929", note:"Standing structures and open shafts on surrounding hillsides.", risk:"high"},
+  {name:"Leesburg", lat:45.2008, lng:-114.3097, era:"1866–1900s", note:"Remote gold camp; several original buildings remain.", risk:"medium"},
+  {name:"Warren townsite", lat:45.2739, lng:-115.6903, era:"1862–1930s", note:"Still has a handful of residents; dredge tailings and old shafts throughout.", risk:"medium"},
+  {name:"Bayhorse townsite", lat:44.3597, lng:-114.3339, era:"1877–1915", note:"Idaho State Park ghost town — several buildings stabilized, surrounding workings are not.", risk:"medium"},
+  {name:"Atlanta townsite", lat:43.8153, lng:-115.1258, era:"1864–present", note:"Still has a few year-round residents; surrounded by extensive old workings.", risk:"high"},
+];
+
+const RISK_COLOR = {high:"#8b1e1e", medium:"#c9791f", low:"#4a7c3a"};
+
+const map = L.map('map', {preferCanvas:true}).setView([44.35, -114.6], 7);
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+  maxZoom: 18,
+  attribution: 'Map: OpenStreetMap | Data: USGS MRDS, curated historic records'
+}).addTo(map);
+
+const mrdsCluster = L.markerClusterGroup({
+  chunkedLoading: true,
+  maxClusterRadius: 55,
+  disableClusteringAtZoom: 13
+});
+map.addLayer(mrdsCluster);
+
+const districtLayer = L.layerGroup().addTo(map);
+const townLayer = L.layerGroup().addTo(map);
+
+function districtIcon(risk){
+  const c = RISK_COLOR[risk] || '#6b6b6b';
+  return L.divIcon({className:'', html:'<div style="width:16px;height:16px;border-radius:50% 50% 50% 0;background:'+c+';transform:rotate(-45deg);border:1.5px solid #2b2620;"></div>', iconSize:[16,16]});
+}
+function townIcon(risk){
+  const c = RISK_COLOR[risk] || '#6b6b6b';
+  return L.divIcon({className:'', html:'<div style="width:13px;height:13px;background:'+c+';border:1.5px solid #2b2620;transform:rotate(45deg);"></div>', iconSize:[13,13]});
+}
+
+KNOWN_DISTRICTS.forEach(function(d){
+  const m = L.marker([d.lat,d.lng], {icon:districtIcon(d.risk)});
+  m.bindPopup('<div class="popup-title">⛏ '+d.name+'</div>'+
+    '<div class="popup-meta"><b>Active era:</b> '+d.era+'</div>'+
+    '<div class="popup-meta">'+d.note+'</div>'+
+    '<div class="popup-warning">Approximate district center — shafts may be scattered widely. Confirm land status before visiting.</div>');
+  districtLayer.addLayer(m);
+});
+
+GHOST_TOWNS.forEach(function(t){
+  const m = L.marker([t.lat,t.lng], {icon:townIcon(t.risk)});
+  m.bindPopup('<div class="popup-title">🏚 '+t.name+'</div>'+
+    '<div class="popup-meta"><b>Active era:</b> '+t.era+'</div>'+
+    '<div class="popup-meta">'+t.note+'</div>'+
+    '<div class="popup-warning">Townsite location — surrounding mine workings may extend well beyond this point.</div>');
+  townLayer.addLayer(m);
+});
+
+const statusEl = document.getElementById('status');
+const countBadge = document.getElementById('count-badge');
+let allMRDSFeatures = [];
+
+function matchesFilter(devStat, filterMode){
+  const s = (devStat || '').toLowerCase().trim();
+  if(filterMode === 'all') return true;
+  if(filterMode === 'confirmed') return CONFIRMED_STATUSES.indexOf(s) !== -1;
+  if(filterMode === 'prospect') return PROSPECT_STATUSES.indexOf(s) !== -1;
+  return true;
+}
+
+function renderMRDS(){
+  mrdsCluster.clearLayers();
+  const filterMode = document.getElementById('status-filter').value;
+  const q = document.getElementById('search-box').value.toLowerCase();
+  let shown = 0;
+  allMRDSFeatures.forEach(function(f){
+    const p = f.props;
+    if(!matchesFilter(p.devStat, filterMode)) return;
+    if(q && !p.name.toLowerCase().includes(q)) return;
+    const m = L.circleMarker([f.lat, f.lng], {
+      radius: 5, weight: 1, color:'#1c3a5c', fillColor:'#3a6ea5', fillOpacity:0.85
+    });
+    m.bindPopup('<div class="popup-title">'+p.name+'</div>'+
+      (p.commod ? '<div class="popup-meta"><b>Commodity:</b> '+p.commod+'</div>' : '')+
+      (p.depType ? '<div class="popup-meta"><b>Deposit type:</b> '+p.depType+'</div>' : '')+
+      (p.devStat ? '<div class="popup-meta"><b>Status:</b> '+p.devStat+'</div>' : '')+
+      '<div class="popup-warning">USGS MRDS historical record. Location accuracy varies. Never enter an opening.</div>');
+    mrdsCluster.addLayer(m);
+    shown++;
+  });
+  countBadge.textContent = shown + ' USGS records shown (' + allMRDSFeatures.length + ' total in area) + ' + KNOWN_DISTRICTS.length + ' districts + ' + GHOST_TOWNS.length + ' ghost towns';
+}
+
+async function fetchAllMRDS(){
+  let offset = 0;
+  const pageSize = 1000;
+  let total = 0;
+  let keepGoing = true;
+
+  while(keepGoing){
+    const params = new URLSearchParams({
+      where: "1=1",
+      outFields: "*",
+      f: "geojson",
+      geometry: JSON.stringify(IDAHO_BBOX),
+      geometryType: "esriGeometryEnvelope",
+      spatialRel: "esriSpatialRelIntersects",
+      inSR: "4326",
+      resultRecordCount: String(pageSize),
+      resultOffset: String(offset)
+    });
+    let gj;
+    try{
+      const res = await fetch(MRDS_URL + '?' + params.toString());
+      if(!res.ok) throw new Error('HTTP '+res.status);
+      gj = await res.json();
+    }catch(err){
+      statusEl.textContent = 'Live USGS fetch failed — showing curated sites only.';
+      console.error(err);
+      break;
+    }
+    const feats = gj.features || [];
+    feats.forEach(function(f){
+      const p = f.properties || {};
+      const coords = f.geometry && f.geometry.coordinates;
+      if(!coords) return;
+      allMRDSFeatures.push({
+        lat: coords[1], lng: coords[0],
+        props: {
+          name: p.site_name || p.SITE_NAME || 'Unnamed site',
+          commod: p.commod1 || p.COMMOD1 || '',
+          depType: p.dep_type || p.DEP_TYPE || '',
+          devStat: p.dev_stat || p.DEV_STAT || ''
+        }
+      });
+    });
+    total += feats.length;
+    statusEl.textContent = 'Loaded '+total+' USGS records so far…';
+    if(feats.length < pageSize){
+      keepGoing = false;
+    } else {
+      offset += pageSize;
+    }
+    if(offset > 20000) keepGoing = false;
+  }
+  statusEl.textContent = total > 0 ? ('Loaded '+total+' USGS records.') : 'No USGS records returned — showing curated sites only.';
+  renderMRDS();
+}
+
+document.getElementById('toggle-mrds').addEventListener('change', function(e){
+  if(e.target.checked) map.addLayer(mrdsCluster); else map.removeLayer(mrdsCluster);
+});
+document.getElementById('toggle-districts').addEventListener('change', function(e){
+  if(e.target.checked) map.addLayer(districtLayer); else map.removeLayer(districtLayer);
+});
+document.getElementById('toggle-towns').addEventListener('change', function(e){
+  if(e.target.checked) map.addLayer(townLayer); else map.removeLayer(townLayer);
+});
+document.getElementById('status-filter').addEventListener('change', renderMRDS);
+document.getElementById('search-box').addEventListener('input', renderMRDS);
+
+fetchAllMRDS();
+</script>
+</body>
+</html>
