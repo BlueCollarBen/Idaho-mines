@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Idaho Historic Mines Explorer</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css" />
+<style>
+  :root{
+    --ink:#1c1a17; --paper:#f4efe6; --rust:#a8471f; --rust-dark:#7c3316; --line:#d9cfbd; --panel:#fbf7ef; --danger:#8b1e1e;
+  }
+  *{box-sizing:border-box;}
+  html,body{height:100%;margin:0;font-family:Georgia,serif;background:var(--paper);color:var(--ink);}
+  #app{display:flex;flex-direction:column;height:100vh;height:100dvh;}
+  header{background:linear-gradient(135deg,var(--rust-dark),var(--rust));color:#fbf3e6;padding:12px 16px;flex:0 0 auto;}
+  header h1{font-size:1.05rem;margin:0;}
+  header .sub{font-size:.7rem;opacity:.9;font-family:sans-serif;margin-top:2px;}
+  #banner{background:#2b2620;color:#e8dcc4;font-family:sans-serif;font-size:.7rem;padding:6px 14px;text-align:center;line-height:1.4;flex:0 0 auto;}
+  #banner strong{color:#e8b45a;}
+  #controls{display:flex;gap:8px;padding:8px 12px;background:var(--panel);border-bottom:1px solid var(--line);flex-wrap:wrap;align-items:center;font-family:sans-serif;font-size:.75rem;flex:0 0 auto;}
+  #controls select,#controls input[type=text]{padding:5px 7px;border:1px solid var(--line);border-radius:4px;font-family:sans-serif;font-size:.75rem;}
+  #status{font-size:.68rem;color:#665;font-family:sans-serif;margin-left:auto;}
+  #map{flex:1 1 auto;min-height:300px;width:100%;background:#ddd6c8;}
+  .popup-title{font-family:Georgia,serif;font-weight:bold;font-size:.95rem;color:var(--rust-dark);margin-bottom:2px;}
+  .popup-meta{font-family:sans-serif;font-size:.72rem;color:#444;margin:2px 0;}
+  .popup-warning{font-family:sans-serif;font-size:.68rem;background:#fdeeee;color:var(--danger);border-left:3px solid var(--danger);padding:5px 7px;margin-top:6px;border-radius:2px;}
+  #fatal-error{display:none;padding:20px;font-family:sans-serif;font-size:.85rem;background:#fdeeee;color:var(--danger);}
+</style>
+</head>
+<body>
+<div id="app">
+  <header>
+    <h1>⛏ Idaho Historic Mines Explorer</h1>
+    <div class="sub" id="count-badge">loading…</div>
+  </header>
+  <div id="banner"><strong>Safety first:</strong> markers show approximate historic locations, not verified current conditions. Never enter a mine opening. Confirm land ownership before visiting.</div>
+  <div id="controls">
+    <label style="display:flex;align-items:center;gap:4px;"><input type="checkbox" id="toggle-mrds" checked> USGS records</label>
+    <label style="display:flex;align-items:center;gap:4px;"><input type="checkbox" id="toggle-known" checked> Historic districts</label>
+    <input type="text" id="search-box" placeholder="Search name…" />
+    <span id="status">Starting map…</span>
+  </div>
+  <div id="fatal-error"></div>
+  <div id="map"></div>
+</div>
+
+<script>
+  window.addEventListener('error', function(e){
+    var box = document.getElementById('fatal-error');
+    box.style.display = 'block';
+    box.innerHTML += '<div>Script error: ' + (e.message || 'unknown') + '</div>';
+  });
+</script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script>
+try{
+
+const KNOWN_DISTRICTS = [
+  {name:"Silver Valley / Coeur d'Alene Mining District", lat:47.5405, lng:-116.0975, era:"1884–present", note:"One of the richest silver-lead-zinc districts in US history. Bunker Hill, Sunshine, Galena mines. Extensive underground workings; surface hazards on old claims near Wallace, Kellogg, Osburn.", risk:"high"},
+  {name:"Yankee Fork District (Custer/Bonanza)", lat:44.4139, lng:-114.7622, era:"1870s–1910s", note:"Ghost towns of Custer & Bonanza. General Custer Mill and shafts along Jordan Creek. Partly within Land of the Yankee Fork Historic Area — some sites stabilized, others not.", risk:"high"},
+  {name:"Atlanta Mining District", lat:43.8125, lng:-115.1275, era:"1864–1930s", note:"Remote gold district in the Sawtooth foothills. Collapsed shafts and adits around the Atlanta townsite; falls into old workings on record.", risk:"high"},
+  {name:"Rocky Bar Mining District", lat:43.7614, lng:-115.1478, era:"1863–1900s", note:"Boise County gold rush town, largely abandoned. Open shafts on surrounding hillsides.", risk:"high"},
+  {name:"Idaho City / Boise Basin District", lat:43.8286, lng:-115.8375, era:"1862–1900s", note:"Idaho's biggest gold rush. Extensive placer and hardrock workings around Idaho City, Placerville, Centerville, Pioneerville.", risk:"medium"},
+  {name:"Warren Mining District", lat:45.2725, lng:-115.6789, era:"1862–1930s", note:"Isolated district in the Payette National Forest; dredge tailings plus older lode shafts on surrounding slopes.", risk:"medium"},
+  {name:"Florence Mining District", lat:45.6167, lng:-116.0167, era:"1861–1870s", note:"Short-lived, explosive gold rush boomtown (largely vanished). Old placer pits and shaft remnants in remote terrain.", risk:"medium"},
+  {name:"Leesburg Mining District", lat:45.2039, lng:-114.3086, era:"1866–1900s", note:"Remote Salmon-Challis district; ghost town with old placer and hardrock workings nearby.", risk:"medium"},
+  {name:"Loon Creek District", lat:44.7167, lng:-114.9167, era:"1869–1880s", note:"Very remote wilderness mining district (Frank Church Wilderness). Old shafts largely unvisited and unmonitored.", risk:"high"},
+  {name:"Sawtooth City / Vienna (Sawtooth Basin)", lat:43.9575, lng:-114.8567, era:"1879–1890s", note:"High-elevation silver boom towns near Alturas Lake, now mostly ghost towns with scattered shaft hazards.", risk:"medium"},
+  {name:"Seven Devils Mining District", lat:45.1000, lng:-116.5333, era:"1880s–1920s", note:"Copper mining district above Hells Canyon; collapsed adits along ridge trails near Heavens Gate.", risk:"medium"},
+  {name:"Bayhorse District", lat:44.3606, lng:-114.3183, era:"1877–1900s", note:"Well-preserved Idaho State Park ghost town with charcoal kilns and mine workings; some areas fenced/stabilized, others not.", risk:"medium"},
+];
+const RISK_COLOR = {high:"#8b1e1e", medium:"#c9791f", low:"#4a7c3a"};
+const MRDS_URL = "https://services.arcgis.com/v01gqwM5QqNysAAi/ArcGIS/rest/services/Mineral_Resources_Data_System_MRDS_Compact_Version/FeatureServer/0/query";
+
+const map = L.map('map').setView([44.35, -114.6], 7);
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+  maxZoom: 18,
+  attribution: 'Map: OpenStreetMap | Data: USGS MRDS, curated historic records'
+}).addTo(map);
+
+const knownLayer = L.layerGroup();
+const mrdsLayer = L.layerGroup();
+
+function knownIcon(risk){
+  const c = RISK_COLOR[risk] || '#6b6b6b';
+  return L.divIcon({className:'', html:'<div style="width:15px;height:15px;border-radius:50% 50% 50% 0;background:'+c+';transform:rotate(-45deg);border:1.5px solid #2b2620;"></div>', iconSize:[15,15]});
+}
+function mrdsIcon(){
+  return L.divIcon({className:'', html:'<div style="width:9px;height:9px;border-radius:50%;background:#3a6ea5;border:1px solid #1c3a5c;"></div>', iconSize:[9,9]});
+}
+
+KNOWN_DISTRICTS.forEach(function(d){
+  const m = L.marker([d.lat,d.lng], {icon:knownIcon(d.risk)});
+  m.bindPopup('<div class="popup-title">'+d.name+'</div>'+
+    '<div class="popup-meta"><b>Active era:</b> '+d.era+'</div>'+
+    '<div class="popup-meta">'+d.note+'</div>'+
+    '<div class="popup-warning">Approximate district center — shafts may be scattered widely. Confirm land status before visiting.</div>');
+  knownLayer.addLayer(m);
+});
+knownLayer.addTo(map);
+
+const statusEl = document.getElementById('status');
+const countBadge = document.getElementById('count-badge');
+countBadge.textContent = KNOWN_DISTRICTS.length + ' curated historic districts loaded';
+
+document.getElementById('toggle-mrds').addEventListener('change', function(e){
+  if(e.target.checked) map.addLayer(mrdsLayer); else map.removeLayer(mrdsLayer);
+});
+document.getElementById('toggle-known').addEventListener('change', function(e){
+  if(e.target.checked) map.addLayer(knownLayer); else map.removeLayer(knownLayer);
+});
+document.getElementById('search-box').addEventListener('input', function(e){
+  const q = e.target.value.toLowerCase();
+  knownLayer.eachLayer(function(m){ m.getElement && (m.getElement().style.display = ''); });
+});
+
+fetch(MRDS_URL + '?where=' + encodeURIComponent("state='ID'") + '&outFields=*&f=geojson&resultRecordCount=1500')
+  .then(function(res){ if(!res.ok) throw new Error('HTTP '+res.status); return res.json(); })
+  .then(function(gj){
+    const feats = gj.features || [];
+    feats.forEach(function(f){
+      const p = f.properties || {};
+      const coords = f.geometry && f.geometry.coordinates;
+      if(!coords) return;
+      const name = p.name || p.site_name || 'Unnamed site';
+      const m = L.marker([coords[1], coords[0]], {icon:mrdsIcon()});
+      m.bindPopup('<div class="popup-title">'+name+'</div>'+
+        '<div class="popup-meta"><b>Commodity:</b> '+(p.commod1||'unknown')+'</div>'+
+        '<div class="popup-meta"><b>Deposit type:</b> '+(p.dep_type||'not recorded')+'</div>'+
+        '<div class="popup-warning">USGS MRDS historical record. Location accuracy varies. Never enter an opening.</div>');
+      mrdsLayer.addLayer(m);
+    });
+    mrdsLayer.addTo(map);
+    statusEl.textContent = 'Loaded ' + feats.length + ' USGS records.';
+    countBadge.textContent = (feats.length + KNOWN_DISTRICTS.length) + ' sites mapped';
+  })
+  .catch(function(err){
+    statusEl.textContent = 'Live USGS fetch unavailable right now — showing curated districts only.';
+  });
+
+}catch(e){
+  document.getElementById('fatal-error').style.display = 'block';
+  document.getElementById('fatal-error').textContent = 'Map failed to start: ' + e.message;
+}
+</script>
+</body>
+</html>
